@@ -1,5 +1,10 @@
-# cron_parse
-Single-file Python CLI tool. Zero deps, Python 3.8+.
+# cron-parse
+
+Single-file Python CLI. Zero dependencies.
+
+## Usage
+
 ```bash
-python3 cron_parse.py --test
+python3 cron_parse.py
+python3 cron_parse.py test
 ```

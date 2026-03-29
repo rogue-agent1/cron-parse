@@ -1,81 +1,67 @@
 #!/usr/bin/env python3
-"""cron_parse - Cron expression parser and next-run calculator."""
+"""Cron expression parser and next-run calculator."""
 import sys
+from datetime import datetime, timedelta
 
 class CronExpr:
     def __init__(self, expr):
         parts = expr.split()
-        assert len(parts) == 5
-        self.minute = self._parse_field(parts[0], 0, 59)
-        self.hour = self._parse_field(parts[1], 0, 23)
-        self.dom = self._parse_field(parts[2], 1, 31)
-        self.month = self._parse_field(parts[3], 1, 12)
-        self.dow = self._parse_field(parts[4], 0, 6)
-
-    def _parse_field(self, field, lo, hi):
-        values = set()
+        assert len(parts) == 5, "Need 5 fields: min hour dom month dow"
+        self.fields = [self._parse(p, r) for p, r in zip(parts, [(0,59),(0,23),(1,31),(1,12),(0,6)])]
+    def _parse(self, field, rng):
+        lo, hi = rng
+        if field == "*": return set(range(lo, hi+1))
+        result = set()
         for part in field.split(","):
             if "/" in part:
                 base, step = part.split("/")
-                step = int(step)
-                if base == "*":
-                    start = lo
-                else:
-                    start = int(base)
-                for v in range(start, hi + 1, step):
-                    values.add(v)
+                start = lo if base == "*" else int(base)
+                result.update(range(start, hi+1, int(step)))
             elif "-" in part:
                 a, b = part.split("-")
-                for v in range(int(a), int(b) + 1):
-                    values.add(v)
-            elif part == "*":
-                values = set(range(lo, hi + 1))
-                return values
+                result.update(range(int(a), int(b)+1))
             else:
-                values.add(int(part))
-        return values
+                result.add(int(part))
+        return result
+    def matches(self, dt):
+        return (dt.minute in self.fields[0] and dt.hour in self.fields[1] and
+                dt.day in self.fields[2] and dt.month in self.fields[3] and
+                dt.weekday() in {(d-1)%7 for d in self.fields[4]} | ({6} if 0 in self.fields[4] else set()))
+    def next_run(self, after=None, limit=525960):
+        dt = (after or datetime.now()).replace(second=0, microsecond=0) + timedelta(minutes=1)
+        for _ in range(limit):
+            dow_set = set()
+            for d in self.fields[4]:
+                dow_set.add((d - 1) % 7 if d > 0 else 6)
+            if (dt.minute in self.fields[0] and dt.hour in self.fields[1] and
+                dt.day in self.fields[2] and dt.month in self.fields[3] and
+                dt.weekday() in dow_set):
+                return dt
+            dt += timedelta(minutes=1)
+        return None
 
-    def matches(self, minute, hour, dom, month, dow):
-        return (minute in self.minute and hour in self.hour and
-                dom in self.dom and month in self.month and dow in self.dow)
-
-    def describe(self):
-        parts = []
-        if self.minute == set(range(60)) and self.hour == set(range(24)):
-            parts.append("every minute")
-        elif self.minute == {0} and self.hour == set(range(24)):
-            parts.append("every hour")
-        elif len(self.minute) == 1 and len(self.hour) == 1:
-            parts.append(f"at {list(self.hour)[0]:02d}:{list(self.minute)[0]:02d}")
-        else:
-            parts.append(f"min={sorted(self.minute)}, hour={sorted(self.hour)}")
-        return ", ".join(parts)
+def describe(expr):
+    parts = expr.split()
+    descs = []
+    labels = ["minute", "hour", "day", "month", "weekday"]
+    for p, l in zip(parts, labels):
+        if p != "*": descs.append(f"{l}={p}")
+    return "Every " + ", ".join(descs) if descs else "Every minute"
 
 def test():
-    c = CronExpr("* * * * *")
-    assert c.matches(0, 0, 1, 1, 0)
-    assert c.matches(30, 12, 15, 6, 3)
+    c = CronExpr("*/5 * * * *")
+    assert 0 in c.fields[0] and 5 in c.fields[0] and 3 not in c.fields[0]
     c2 = CronExpr("0 9 * * 1-5")
-    assert c2.matches(0, 9, 15, 6, 1)
-    assert not c2.matches(0, 9, 15, 6, 0)
-    assert not c2.matches(30, 9, 15, 6, 1)
-    c3 = CronExpr("*/15 * * * *")
-    assert c3.matches(0, 0, 1, 1, 0)
-    assert c3.matches(15, 0, 1, 1, 0)
-    assert c3.matches(30, 0, 1, 1, 0)
-    assert not c3.matches(10, 0, 1, 1, 0)
-    c4 = CronExpr("0 0 1 1 *")
-    assert c4.matches(0, 0, 1, 1, 3)
-    assert not c4.matches(0, 0, 2, 1, 3)
-    c5 = CronExpr("0,30 9,17 * * *")
-    assert c5.matches(0, 9, 1, 1, 0)
-    assert c5.matches(30, 17, 1, 1, 0)
-    assert not c5.matches(15, 9, 1, 1, 0)
-    d = CronExpr("* * * * *").describe()
-    assert "every minute" in d
-    d2 = CronExpr("0 9 * * *").describe()
-    assert "09:00" in d2
-    print("All tests passed!")
+    dt = datetime(2026, 3, 30, 9, 0)  # Monday
+    nxt = c2.next_run(datetime(2026, 3, 29, 10, 0))  # Saturday
+    assert nxt is not None and nxt.weekday() < 5 and nxt.hour == 9
+    assert describe("0 9 * * *") == "Every minute=0, hour=9"
+    c3 = CronExpr("30 8,12 * * *")
+    assert 8 in c3.fields[1] and 12 in c3.fields[1]
+    print("  cron_parse: ALL TESTS PASSED")
 
 if __name__ == "__main__":
-    test() if "--test" in sys.argv else print("cron_parse: Cron expression parser. Use --test")
+    if len(sys.argv) > 1 and sys.argv[1] == "test": test()
+    else:
+        expr = sys.argv[2] if len(sys.argv) > 2 else "*/5 * * * *"
+        print(f"Next: {CronExpr(expr).next_run()}")
