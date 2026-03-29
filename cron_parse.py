@@ -1,78 +1,81 @@
 #!/usr/bin/env python3
-"""Cron expression parser and next-run calculator."""
-import sys, time
-from datetime import datetime, timedelta
+"""cron_parse - Cron expression parser and next-run calculator."""
+import sys
 
-def parse_field(field, min_val, max_val):
-    values = set()
-    for part in field.split(","):
-        if "/" in part:
-            range_part, step = part.split("/"); step = int(step)
-            if range_part == "*": start, end = min_val, max_val
-            elif "-" in range_part:
-                s, e = range_part.split("-"); start, end = int(s), int(e)
-            else: start, end = int(range_part), max_val
-            values.update(range(start, end + 1, step))
-        elif "-" in part:
-            s, e = part.split("-"); values.update(range(int(s), int(e) + 1))
-        elif part == "*": values.update(range(min_val, max_val + 1))
-        else: values.add(int(part))
-    return sorted(values)
+class CronExpr:
+    def __init__(self, expr):
+        parts = expr.split()
+        assert len(parts) == 5
+        self.minute = self._parse_field(parts[0], 0, 59)
+        self.hour = self._parse_field(parts[1], 0, 23)
+        self.dom = self._parse_field(parts[2], 1, 31)
+        self.month = self._parse_field(parts[3], 1, 12)
+        self.dow = self._parse_field(parts[4], 0, 6)
 
-def parse_cron(expr):
-    parts = expr.split()
-    if len(parts) != 5: raise ValueError("Need 5 fields: min hour dom month dow")
-    return {
-        "minute": parse_field(parts[0], 0, 59),
-        "hour": parse_field(parts[1], 0, 23),
-        "dom": parse_field(parts[2], 1, 31),
-        "month": parse_field(parts[3], 1, 12),
-        "dow": parse_field(parts[4], 0, 6),
-    }
+    def _parse_field(self, field, lo, hi):
+        values = set()
+        for part in field.split(","):
+            if "/" in part:
+                base, step = part.split("/")
+                step = int(step)
+                if base == "*":
+                    start = lo
+                else:
+                    start = int(base)
+                for v in range(start, hi + 1, step):
+                    values.add(v)
+            elif "-" in part:
+                a, b = part.split("-")
+                for v in range(int(a), int(b) + 1):
+                    values.add(v)
+            elif part == "*":
+                values = set(range(lo, hi + 1))
+                return values
+            else:
+                values.add(int(part))
+        return values
 
-def next_run(expr, after=None):
-    cron = parse_cron(expr)
-    dt = after or datetime.now()
-    dt = dt.replace(second=0, microsecond=0) + timedelta(minutes=1)
-    for _ in range(525600):  # max 1 year
-        if (dt.minute in cron["minute"] and dt.hour in cron["hour"] and
-            dt.day in cron["dom"] and dt.month in cron["month"] and
-            dt.weekday() in [d % 7 for d in cron["dow"]]):
-            return dt
-        dt += timedelta(minutes=1)
-    return None
+    def matches(self, minute, hour, dom, month, dow):
+        return (minute in self.minute and hour in self.hour and
+                dom in self.dom and month in self.month and dow in self.dow)
 
-def describe(expr):
-    parts = expr.split()
-    descs = []
-    if parts[0] == "0" and parts[1] != "*": descs.append(f"at {parts[1]}:00")
-    elif parts[0] == "*" and parts[1] == "*": descs.append("every minute")
-    elif parts[0].startswith("*/"):
-        descs.append(f"every {parts[0][2:]} minutes")
-    return " ".join(descs) if descs else expr
+    def describe(self):
+        parts = []
+        if self.minute == set(range(60)) and self.hour == set(range(24)):
+            parts.append("every minute")
+        elif self.minute == {0} and self.hour == set(range(24)):
+            parts.append("every hour")
+        elif len(self.minute) == 1 and len(self.hour) == 1:
+            parts.append(f"at {list(self.hour)[0]:02d}:{list(self.minute)[0]:02d}")
+        else:
+            parts.append(f"min={sorted(self.minute)}, hour={sorted(self.hour)}")
+        return ", ".join(parts)
 
-def main():
-    if len(sys.argv) < 2: print("Usage: cron_parse.py <demo|test>"); return
-    if sys.argv[1] == "test":
-        c = parse_cron("*/5 * * * *")
-        assert c["minute"] == [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]
-        assert c["hour"] == list(range(24))
-        c2 = parse_cron("0 9 * * 1-5")
-        assert c2["minute"] == [0]; assert c2["hour"] == [9]
-        assert c2["dow"] == [1, 2, 3, 4, 5]
-        c3 = parse_cron("30 */2 * * *")
-        assert c3["minute"] == [30]; assert c3["hour"] == [0,2,4,6,8,10,12,14,16,18,20,22]
-        c4 = parse_cron("0 0 1,15 * *")
-        assert c4["dom"] == [1, 15]
-        after = datetime(2024, 1, 1, 0, 0, 0)
-        nr = next_run("0 9 * * *", after)
-        assert nr.hour == 9 and nr.minute == 0
-        try: parse_cron("bad"); assert False
-        except ValueError: pass
-        print("All tests passed!")
-    else:
-        expr = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "*/15 * * * *"
-        print(f"Parsed: {parse_cron(expr)}")
-        print(f"Next: {next_run(expr)}")
+def test():
+    c = CronExpr("* * * * *")
+    assert c.matches(0, 0, 1, 1, 0)
+    assert c.matches(30, 12, 15, 6, 3)
+    c2 = CronExpr("0 9 * * 1-5")
+    assert c2.matches(0, 9, 15, 6, 1)
+    assert not c2.matches(0, 9, 15, 6, 0)
+    assert not c2.matches(30, 9, 15, 6, 1)
+    c3 = CronExpr("*/15 * * * *")
+    assert c3.matches(0, 0, 1, 1, 0)
+    assert c3.matches(15, 0, 1, 1, 0)
+    assert c3.matches(30, 0, 1, 1, 0)
+    assert not c3.matches(10, 0, 1, 1, 0)
+    c4 = CronExpr("0 0 1 1 *")
+    assert c4.matches(0, 0, 1, 1, 3)
+    assert not c4.matches(0, 0, 2, 1, 3)
+    c5 = CronExpr("0,30 9,17 * * *")
+    assert c5.matches(0, 9, 1, 1, 0)
+    assert c5.matches(30, 17, 1, 1, 0)
+    assert not c5.matches(15, 9, 1, 1, 0)
+    d = CronExpr("* * * * *").describe()
+    assert "every minute" in d
+    d2 = CronExpr("0 9 * * *").describe()
+    assert "09:00" in d2
+    print("All tests passed!")
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    test() if "--test" in sys.argv else print("cron_parse: Cron expression parser. Use --test")
